@@ -1,181 +1,188 @@
 #!/usr/bin/env python3
 """
-Structural inspector for Arc's StorableSidebar.json. Read-only. The goal is
-to find where Spaces live and how they reference their pinned/topApps
-containers, so the reconcile script can parse them correctly.
+Targeted Arc inspector v2. Answers two questions:
+  1. For each Space, what's its profile.directoryBasename and where does
+     'pinned' point to?
+  2. For each `containerType.topApps` container, what's its identifier and
+     how does it link back to a Space?
 
-Output is schema-only — no URLs, just shape/keys/counts. Safe to paste.
+No URLs are printed. Safe to paste.
 """
 
 from __future__ import annotations
 
 import json
-from collections import Counter
 from pathlib import Path
 
 ARC_SIDEBAR = Path.home() / "Library" / "Application Support" / "Arc" / "StorableSidebar.json"
 
 
-def kshape(d: dict, k: str) -> str:
-    v = d.get(k)
-    if v is None:
-        return "None"
-    if isinstance(v, dict):
-        return f"dict(keys={len(v)})"
-    if isinstance(v, list):
-        return f"list(len={len(v)})"
-    return type(v).__name__
+def get_live_spaces(root) -> list[dict]:
+    """Spaces live at $.sidebar.containers[1].spaces (per inspect_arc.py)."""
+    try:
+        return root["sidebar"]["containers"][1]["spaces"]
+    except (KeyError, IndexError, TypeError):
+        return []
 
 
-def top_level_structure(obj, depth=0, max_depth=4, prefix=""):
-    pad = "  " * depth
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if isinstance(v, dict):
-                print(f"{pad}{k}: dict (keys={len(v)})")
-                if depth < max_depth:
-                    top_level_structure(v, depth + 1, max_depth)
-            elif isinstance(v, list):
-                print(f"{pad}{k}: list (len={len(v)})")
-                if v and depth < max_depth:
-                    sample = v[0]
-                    if isinstance(sample, (dict, list)):
-                        print(f"{pad}  [0]:")
-                        top_level_structure(sample, depth + 2, max_depth)
-                    else:
-                        print(f"{pad}  [0]: {type(sample).__name__}")
-            else:
-                print(f"{pad}{k}: {type(v).__name__}")
-    elif isinstance(obj, list) and obj and depth < max_depth:
-        top_level_structure(obj[0], depth + 1, max_depth)
+def get_live_items(root) -> list[dict]:
+    """Items array, sibling of spaces."""
+    try:
+        return root["sidebar"]["containers"][1]["items"]
+    except (KeyError, IndexError, TypeError):
+        return []
 
 
-def find_space_like(obj, path="$", hits=None):
-    """A 'space-like' object has a containerIDs array and either a title or a
-    customInfo or a profile field."""
-    if hits is None:
-        hits = []
-    if isinstance(obj, dict):
-        cid = obj.get("containerIDs")
-        if isinstance(cid, list) and len(cid) >= 2 and (
-            "title" in obj or "customInfo" in obj or "profile" in obj
-        ):
-            # Build a "marker map" from containerIDs (assumed alternating
-            # marker, uuid).
-            markers = {}
-            for i in range(0, len(cid) - 1, 2):
-                m, u = cid[i], cid[i + 1]
-                if isinstance(m, str):
-                    markers.setdefault(m, []).append(u if isinstance(u, str) else None)
-            hits.append({
-                "path": path,
-                "id": obj.get("id"),
-                "title": obj.get("title"),
-                "has_customInfo": isinstance(obj.get("customInfo"), dict),
-                "has_profile": isinstance(obj.get("profile"), dict),
-                "containerIDs_len": len(cid),
-                "markers": markers,
-            })
-        for k, v in obj.items():
-            find_space_like(v, f"{path}.{k}", hits)
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            find_space_like(v, f"{path}[{i}]", hits)
-    return hits
+def get_topapps_container_ids(root):
+    """The mapping list at sidebarSyncState.container.value.topAppsContainerIDs."""
+    try:
+        return root["sidebarSyncState"]["container"]["value"]["topAppsContainerIDs"]
+    except (KeyError, TypeError):
+        return None
 
 
-def find_container_like(obj, path="$", hits=None):
-    """Anything with childrenIds (excluding spaces themselves)."""
-    if hits is None:
-        hits = []
-    if isinstance(obj, dict):
-        if isinstance(obj.get("childrenIds"), list):
-            data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
-            ic = data.get("itemContainer") if isinstance(data, dict) else None
-            ct = ic.get("containerType") if isinstance(ic, dict) else None
-            hits.append({
-                "path": path,
-                "id": obj.get("id"),
-                "children": len(obj["childrenIds"]),
-                "containerType_keys": (list(ct.keys()) if isinstance(ct, dict) else None),
-                "has_data": bool(data),
-                "data_keys": (list(data.keys())[:6] if isinstance(data, dict) else []),
-            })
-        for v in obj.values():
-            find_container_like(v, path, hits)
-    elif isinstance(obj, list):
-        for v in obj:
-            find_container_like(v, path, hits)
-    return hits
+def get_topapps_container_id(root):
+    try:
+        return root["sidebarSyncState"]["container"]["value"]["topAppsContainerID"]
+    except (KeyError, TypeError):
+        return None
 
 
-def find_tab_like(obj, hits=None):
-    """Items with data.tab.savedURL — to confirm where tab leaves live."""
-    if hits is None:
-        hits = [0]
-    if isinstance(obj, dict):
-        data = obj.get("data")
-        if isinstance(data, dict):
-            tab = data.get("tab")
-            if isinstance(tab, dict) and tab.get("savedURL"):
-                hits[0] += 1
-        for v in obj.values():
-            find_tab_like(v, hits)
-    elif isinstance(obj, list):
-        for v in obj:
-            find_tab_like(v, hits)
-    return hits[0]
+def find_items_by_id(items: list[dict], wanted_ids: set[str]) -> dict[str, dict]:
+    """Linear scan of the flat items array."""
+    out = {}
+    for it in items:
+        if isinstance(it, dict) and it.get("id") in wanted_ids:
+            out[it["id"]] = it
+    return out
 
 
 def main() -> None:
-    if not ARC_SIDEBAR.exists():
-        raise SystemExit(f"Not found: {ARC_SIDEBAR}")
-    data = json.loads(ARC_SIDEBAR.read_text(encoding="utf-8"))
-    print(f"File: {ARC_SIDEBAR}\nSize: {ARC_SIDEBAR.stat().st_size} bytes\n")
+    root = json.loads(ARC_SIDEBAR.read_text(encoding="utf-8"))
 
-    print("=== Top-level structure (depth 4) ===")
-    top_level_structure(data, max_depth=4)
+    spaces = get_live_spaces(root)
+    items = get_live_items(root)
+    print(f"Live spaces: {len(spaces)}")
+    print(f"Live items: {len(items)}\n")
 
-    print("\n=== Space-like objects ===")
-    spaces = find_space_like(data)
-    print(f"Total: {len(spaces)}")
-    # Distinct marker names across spaces
-    marker_count = Counter()
-    for s in spaces:
-        for m in s["markers"]:
-            marker_count[m] += 1
-    print(f"Distinct containerID markers across spaces: {dict(marker_count)}")
-    for s in spaces[:20]:
-        print(f"  path: {s['path']}")
-        print(f"    id={s['id']}  title={s['title']!r}  "
-              f"customInfo={s['has_customInfo']}  profile={s['has_profile']}  "
-              f"containerIDs_len={s['containerIDs_len']}")
-        print(f"    markers: {list(s['markers'].keys())}")
-    if len(spaces) > 20:
-        print(f"  ... +{len(spaces)-20} more")
+    # -- 1. Space metadata
+    space_meta = []
+    print("=== Spaces (live) ===")
+    for i, sp in enumerate(spaces):
+        if not isinstance(sp, dict):
+            continue
+        title = sp.get("title")
+        sp_id = sp.get("id")
+        cids = sp.get("containerIDs") or []
+        # profile
+        prof_keys, prof_basename = [], None
+        prof = sp.get("profile")
+        if isinstance(prof, dict):
+            prof_keys = list(prof.keys())
+            default = prof.get("default")
+            if isinstance(default, dict):
+                prof_basename = default.get("directoryBasename")
+            elif isinstance(prof.get("custom"), dict):
+                cust = prof["custom"]
+                cust_keys = list(cust.keys())
+                prof_keys = prof_keys + [f"custom:{cust_keys}"]
+                # Sometimes profile is {custom: {"_0": {"directoryBasename": ...}}}
+                for v in cust.values():
+                    if isinstance(v, dict) and v.get("directoryBasename"):
+                        prof_basename = v["directoryBasename"]
+                        break
+        markers = {}
+        for j in range(0, len(cids) - 1, 2):
+            m, u = cids[j], cids[j + 1]
+            if isinstance(m, str):
+                markers[m] = u
+        print(f"  [{i}] {title!r}  id={sp_id}")
+        print(f"      profile_keys={prof_keys}  directoryBasename={prof_basename!r}")
+        print(f"      markers={markers}")
+        space_meta.append({"i": i, "id": sp_id, "title": title,
+                           "profile": prof_basename, "pinned_cid": markers.get("pinned"),
+                           "unpinned_cid": markers.get("unpinned")})
 
-    print("\n=== Container-like objects (has childrenIds) ===")
-    conts = find_container_like(data)
-    # Tally containerType keys
-    ct_keys = Counter()
-    for c in conts:
-        for k in (c["containerType_keys"] or []):
-            ct_keys[k] += 1
-    print(f"Total containers: {len(conts)}")
-    print(f"Distinct containerType keys: {dict(ct_keys)}")
-    # Show a few examples per containerType
-    examples = {}
-    for c in conts:
-        for k in (c["containerType_keys"] or []):
-            examples.setdefault(k, []).append(c)
-    for k, lst in examples.items():
-        print(f"  containerType.{k}: {len(lst)} container(s); first example:")
-        print(f"    path: {lst[0]['path']}")
-        print(f"    id={lst[0]['id']}  children={lst[0]['children']}  "
-              f"data_keys={lst[0]['data_keys']}")
+    # -- 2. topApps containers
+    print("\n=== topApps containers ===")
+    topapps = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        data = it.get("data")
+        if not isinstance(data, dict):
+            continue
+        ic = data.get("itemContainer")
+        if not isinstance(ic, dict):
+            continue
+        ct = ic.get("containerType")
+        if not isinstance(ct, dict) or "topApps" not in ct:
+            continue
+        ta = ct["topApps"]
+        child_count = len(it.get("childrenIds") or [])
+        topapps.append({"id": it.get("id"), "topApps_value": ta,
+                        "children": child_count})
+    print(f"Total: {len(topapps)}")
+    for ta in topapps:
+        # Print the raw topApps value structure
+        v = ta["topApps_value"]
+        if isinstance(v, dict):
+            v_repr = {k: (repr(val)[:80] if not isinstance(val, (dict, list))
+                          else f"{type(val).__name__}(keys={list(val.keys())[:5]})"
+                          if isinstance(val, dict)
+                          else f"list(len={len(val)})")
+                      for k, val in v.items()}
+        else:
+            v_repr = repr(v)[:120]
+        print(f"  id={ta['id']}  children={ta['children']}")
+        print(f"    topApps_value: {v_repr}")
 
-    print("\n=== Tab counts ===")
-    print(f"Items with data.tab.savedURL: {find_tab_like(data)}")
+    # -- 3. topAppsContainerIDs mapping
+    print("\n=== topAppsContainerIDs mapping ===")
+    mapping = get_topapps_container_ids(root)
+    single = get_topapps_container_id(root)
+    print(f"topAppsContainerID (single): {single!r}")
+    if isinstance(mapping, list):
+        print(f"topAppsContainerIDs (list of {len(mapping)}):")
+        for i, m in enumerate(mapping):
+            if isinstance(m, dict):
+                # Common shape: {"custom": {"_0": ..., "_1": ...}} or similar
+                shape = {}
+                for k, v in m.items():
+                    if isinstance(v, dict):
+                        shape[k] = {kk: (repr(vv)[:100] if not isinstance(vv, (dict, list))
+                                          else type(vv).__name__)
+                                     for kk, vv in v.items()}
+                    else:
+                        shape[k] = repr(v)[:100]
+                print(f"  [{i}] {shape}")
+            else:
+                print(f"  [{i}] {repr(m)[:120]}")
+    else:
+        print(f"  (not a list: {type(mapping).__name__})")
+
+    # -- 4. Cross-check: does any topApps container id appear in the mapping?
+    print("\n=== Cross-check ===")
+    ta_ids = {t["id"] for t in topapps}
+    if isinstance(mapping, list):
+        flat_strs = []
+        def collect_strs(o):
+            if isinstance(o, str):
+                flat_strs.append(o)
+            elif isinstance(o, dict):
+                for v in o.values():
+                    collect_strs(v)
+            elif isinstance(o, list):
+                for v in o:
+                    collect_strs(v)
+        collect_strs(mapping)
+        matches = ta_ids & set(flat_strs)
+        print(f"topApps container ids referenced in topAppsContainerIDs: {len(matches)}/{len(ta_ids)}")
+        # Show the first few orphans
+        orphans = ta_ids - set(flat_strs)
+        if orphans:
+            print(f"  orphan topApps containers (not in mapping): "
+                  f"{list(orphans)[:5]}")
 
 
 if __name__ == "__main__":

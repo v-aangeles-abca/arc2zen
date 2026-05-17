@@ -260,11 +260,34 @@ def _profile_key(profile_field) -> str | None:
     return None
 
 
+def _extract_arc_space_style(sp: dict) -> dict:
+    """Extract emoji icon and color from an Arc Space's customInfo."""
+    ci = sp.get("customInfo") or {}
+    result: dict = {"icon": None, "color": None}
+    # Emoji / icon
+    icon_type = ci.get("iconType")
+    if isinstance(icon_type, dict):
+        emoji = icon_type.get("emoji_v2")
+        if emoji and isinstance(emoji, str):
+            result["icon"] = emoji
+    # Color (midTone RGB from windowTheme)
+    try:
+        mid = ci["windowTheme"]["primaryColorPalette"]["midTone"]
+        r = max(0, min(255, int(mid["red"] * 255)))
+        g = max(0, min(255, int(mid["green"] * 255)))
+        b = max(0, min(255, int(mid["blue"] * 255)))
+        result["color"] = [r, g, b]
+    except (KeyError, TypeError, ValueError):
+        pass
+    return result
+
+
 def parse_arc(sidebar_path: Path) -> dict:
     """Return Arc data anchored to the real shape:
 
       {
-        'spaces':            [ { uuid, name, profile_key, pinned: [...], unpinned: [...] }, ... ],
+        'spaces':            [ { uuid, name, profile_key, pinned: [...], unpinned: [...],
+                                 icon: str|None, color: [r,g,b]|None }, ... ],
         'topapps_by_profile':{ profile_key: [ {url, title, arc_id}, ... ], ... },
       }
 
@@ -274,15 +297,38 @@ def parse_arc(sidebar_path: Path) -> dict:
     """
     root = json.loads(sidebar_path.read_text(encoding="utf-8"))
 
-    # 1. Locate live spaces and the live items list.
-    try:
-        live_spaces = root["sidebar"]["containers"][1]["spaces"]
-    except (KeyError, IndexError, TypeError):
-        live_spaces = []
-    try:
-        live_items = root["sidebar"]["containers"][1]["items"]
-    except (KeyError, IndexError, TypeError):
-        live_items = []
+    # Build a name -> style map from ALL containers (icon/color metadata
+    # may live in a different container than the tab data).
+    style_by_name: dict[str, dict] = {}
+    for c in root.get("sidebar", {}).get("containers", []):
+        if not isinstance(c, dict):
+            continue
+        for sp in c.get("spaces", []):
+            if not isinstance(sp, dict):
+                continue
+            name = norm(sp.get("title") or "")
+            if not name:
+                continue
+            style = _extract_arc_space_style(sp)
+            if style["icon"] or style["color"]:
+                style_by_name[name] = style
+
+    # 1. Locate the active container (the one with the most titled spaces
+    #    and items). Arc rotates which container index is live.
+    live_spaces: list = []
+    live_items: list = []
+    best_score = -1
+    for c in root.get("sidebar", {}).get("containers", []):
+        if not isinstance(c, dict):
+            continue
+        spaces = c.get("spaces", [])
+        items = c.get("items", [])
+        titled = sum(1 for s in spaces if isinstance(s, dict) and s.get("title"))
+        score = titled * 1000 + len(items)
+        if score > best_score:
+            best_score = score
+            live_spaces = spaces
+            live_items = items
 
     items_by_id: dict[str, dict] = {}
     for it in live_items:
@@ -317,12 +363,15 @@ def parse_arc(sidebar_path: Path) -> dict:
                 if isinstance(ch, str):
                     _collect_tabs_under(ch, items_by_id, unpinned)
 
+        style = style_by_name.get(norm(title), {})
         spaces_out.append({
             "uuid": sp_id,
             "name": title,
             "profile_key": pkey,
             "pinned": pinned,
             "unpinned": unpinned,
+            "icon": style.get("icon"),
+            "color": style.get("color"),
         })
 
     # 3. profile_key -> topApps container id, from topAppsContainerIDs pairs.
@@ -740,6 +789,14 @@ def reconcile(arc: dict, obj: dict, topapps_target_name: str | None,
     ws_by_uuid = {w["uuid"]: w for w in zen_ws if w.get("uuid")}
     arc_to_zen = build_arc_to_zen(arc, zen_ws, explicit_map)
 
+    # Workspace style (icon/color) from Arc -> Zen UUID.
+    ws_styles: dict[str, dict] = {}
+    for sp in arc["spaces"]:
+        ws_uuid = arc_to_zen.get(norm(sp["name"]))
+        if ws_uuid and (sp.get("icon") or sp.get("color")):
+            ws_styles[ws_uuid] = {"icon": sp.get("icon"),
+                                  "color": sp.get("color")}
+
     # 1. Flat desired Zen-essentials list, dedup by (ws_uuid, url).
     #
     # Zen essentials are sourced from Arc's per-PROFILE topApps. Arc's
@@ -918,6 +975,7 @@ def reconcile(arc: dict, obj: dict, topapps_target_name: str | None,
         "pinned_adds": pinned_adds,
         "ws_summary": ws_summary,
         "ws_by_uuid": ws_by_uuid,
+        "ws_styles": ws_styles,
     }
 
 
@@ -1137,6 +1195,34 @@ def apply_plan(obj: dict, plan: dict, also_pinned: bool, prune: bool) -> None:
             if ctx > 0:
                 t["userContextId"] = ctx
 
+    # 6. Apply workspace icons and colors from Arc.
+    ws_styles = plan.get("ws_styles", {})
+    if ws_styles:
+        for sp in obj.get("spaces") or []:
+            if not isinstance(sp, dict):
+                continue
+            style = ws_styles.get(sp.get("uuid"))
+            if not style:
+                continue
+            if style.get("icon") and not sp.get("icon"):
+                sp["icon"] = style["icon"]
+            color = style.get("color")
+            if color:
+                theme = sp.setdefault("theme", {
+                    "type": "gradient", "gradientColors": [],
+                    "opacity": 0.5, "texture": 0,
+                })
+                if not theme.get("gradientColors"):
+                    theme["gradientColors"] = [{
+                        "c": color,
+                        "isCustom": False,
+                        "algorithm": "floating",
+                        "isPrimary": True,
+                        "lightness": "60",
+                        "position": {"x": 81, "y": 152},
+                        "type": "explicit-lightness",
+                    }]
+
 
 def write_user_js(profile: Path, dry_run: bool) -> None:
     path = profile / "user.js"
@@ -1160,8 +1246,11 @@ def print_arc_inventory(arc: dict) -> None:
     log("=== Arc inventory ===")
     log("Spaces:")
     for sp in arc["spaces"]:
-        log(f"  - {sp['name']!r}  profile_key={sp['profile_key']!r}  "
-            f"pinned={len(sp['pinned'])}  unpinned={len(sp['unpinned'])}")
+        icon = sp.get("icon") or ""
+        color = sp.get("color")
+        color_str = f"  color=#{color[0]:02x}{color[1]:02x}{color[2]:02x}" if color else ""
+        log(f"  - {icon}{sp['name']!r}  profile_key={sp['profile_key']!r}  "
+            f"pinned={len(sp['pinned'])}  unpinned={len(sp['unpinned'])}{color_str}")
         for t in sp["pinned"][:50]:
             folder = t.get('folder')
             tag = f" [{folder}]" if folder else ""

@@ -2,6 +2,8 @@
 
 A set of Python scripts to migrate your tabs, workspaces, pinned sites, and folder structure from [Arc Browser](https://arc.net/) to [Zen Browser](https://zen-browser.app/).
 
+Note: I made this for myself to migrate from Arc to Zen (which was a bit tricky, especially the pinned tabs and folder structure), but I hope it can be useful to others in the same boat. It's a bit rough around the edges and currently only supports macOS, but contributions are welcome!
+
 ## The Problem
 
 Switching from Arc to Zen means manually recreating your entire workspace setup:

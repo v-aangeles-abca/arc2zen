@@ -138,7 +138,7 @@ This script handles all of that automatically. Tabs within a folder are linked v
 
 | Script | Purpose |
 |--------|---------|
-| `inspect_arc.py` / `inspect_arc_v2.py` | Explore Arc's StorableSidebar.json structure |
+| `inspect_arc.py` | Explore Arc's StorableSidebar.json structure |
 | `inspect_zen.py` | Explore Zen's session file |
 | `list_zen_essentials.py` | List current Zen essentials per workspace |
 | `containerize_zen_workspaces.py` | Set up containers for existing workspaces |

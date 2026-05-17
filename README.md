@@ -43,7 +43,7 @@ The main script (`reconcile_zen_with_arc.py`) performs a single-pass reconciliat
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/arc2zen.git
+git clone https://github.com/v-aangeles-abca/arc2zen.git
 cd arc2zen
 python3 -m venv venv
 source venv/bin/activate

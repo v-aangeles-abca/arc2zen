@@ -4,6 +4,8 @@ A set of Python scripts to migrate your tabs, workspaces, pinned sites, and fold
 
 Note: I made this for myself to migrate from Arc to Zen (which was a bit tricky, especially the pinned tabs and folder structure), but I hope it can be useful to others in the same boat. It's a bit rough around the edges and currently only supports macOS, but contributions are welcome!
 
+Inspired by [rafcabezas/arc2zen](https://github.com/rafcabezas/arc2zen), which handles the basic migration. This project extends the concept with full folder/tab-group support, workspace bootstrapping, container isolation, and idempotent reconciliation.
+
 ## The Problem
 
 Switching from Arc to Zen means manually recreating your entire workspace setup:

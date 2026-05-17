@@ -1,10 +1,10 @@
 # arc2zen — Migrate Arc Browser to Zen Browser
 
-A set of Python scripts to migrate your tabs, workspaces, pinned sites, and folder structure from [Arc Browser](https://arc.net/) to [Zen Browser](https://zen-browser.app/).
+A set of Python scripts to migrate your tabs, workspaces, pinned sites, folder structure, workspace icons (emojis), and theme colors from [Arc Browser](https://arc.net/) to [Zen Browser](https://zen-browser.app/).
 
 Note: I made this for myself to migrate from Arc to Zen (which was a bit tricky, especially the pinned tabs and folder structure), but I hope it can be useful to others in the same boat. It's a bit rough around the edges and currently only supports macOS, but contributions are welcome!
 
-Inspired by [rafcabezas/arc2zen](https://github.com/rafcabezas/arc2zen), which handles the basic migration. This project extends the concept with full folder/tab-group support, workspace bootstrapping, container isolation, and idempotent reconciliation.
+Inspired by [rafcabezas/arc2zen](https://github.com/rafcabezas/arc2zen), which handles the basic migration. This project extends the concept with full folder/tab-group support, workspace bootstrapping, container isolation, workspace icon/color migration, and idempotent reconciliation.
 
 ## The Problem
 
@@ -14,6 +14,8 @@ Switching from Arc to Zen means manually recreating your entire workspace setup:
 - Arc **Pinned Tabs** → Zen **Pinned Tabs**
 - Arc **Folders** (tab groups within a Space) → Zen **Folders** (tab groups within a Workspace)
 - Arc **Profiles** → Zen **Containers** (for per-workspace cookie isolation)
+- Arc **Space Icons** (emojis) → Zen **Workspace Icons**
+- Arc **Space Colors** → Zen **Workspace Theme Colors**
 
 If you have multiple Spaces, each with folders and dozens of pinned tabs, doing this by hand is painful. This tool automates the entire migration.
 
@@ -27,8 +29,10 @@ The main script (`reconcile_zen_with_arc.py`) performs a single-pass reconciliat
 4. **Creates missing workspaces** in Zen for Arc Spaces that have no match (with `--bootstrap`).
 5. **Synthesizes Essentials** for Arc's top-apps (Favorites) in each matched workspace.
 6. **Imports pinned tabs** preserving Arc's folder structure as Zen tab groups.
-7. **Sets up containers** so each workspace gets cookie isolation (matching Arc's per-Profile separation).
-8. **Configures user.js** to enable container-specific Essentials.
+7. **Migrates workspace icons** — Arc Space emojis become Zen Workspace icons.
+8. **Migrates workspace colors** — Arc Space theme colors become Zen Workspace gradient colors.
+9. **Sets up containers** so each workspace gets cookie isolation (matching Arc's per-Profile separation).
+10. **Configures user.js** to enable container-specific Essentials.
 
 ## Safety
 
